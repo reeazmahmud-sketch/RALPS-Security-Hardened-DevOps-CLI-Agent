@@ -1,0 +1,46 @@
+[workspace]
+members = [
+    "cli",
+    "tui",
+    "libs/ai",
+    "libs/api",
+    "libs/shared",
+    "libs/mcp/client",
+    "libs/mcp/server",
+    "libs/mcp/proxy",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.1"
+edition = "2021"
+authors = ["RALPS Team"]
+license = "Apache-2.0"
+repository = "https://github.com/reeazmahmud-sketch/ralps"
+
+[workspace.dependencies]
+tokio = { version = "1.35", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+reqwest = { version = "0.11", features = ["json", "stream"] }
+futures = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+clap = { version = "4.4", features = ["derive", "env"] }
+colored = "2.0"
+ratatui = "0.25"
+crossterm = "0.27"
+parking_lot = "0.12"
+async-trait = "0.1"
+regex = "1.10"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
