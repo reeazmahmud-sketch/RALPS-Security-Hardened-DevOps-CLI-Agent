@@ -2,160 +2,136 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Rust Edition 2021](https://img.shields.io/badge/Rust-2021-orange)](https://www.rust-lang.org/)
-[![Status: Active Development](https://img.shields.io/badge/Status-Active%20Development-brightgreen)]()
+[![Status: Prototype](https://img.shields.io/badge/Status-Prototype-yellow)]()
 
-RALPS is a security-hardened DevOps AI agent that runs in your terminal. It generates infrastructure code, debugs Kubernetes, configures CI/CD, and automates deployments — **without giving the LLM keys to production**.
+RALPS is a security-hardened DevOps CLI prototype for local operational workflows. It keeps credentials local, can execute a bounded set of approved commands, and can optionally request AI summaries from supported providers.
 
-## 🎯 Features
+## Current Capabilities
 
-### Infrastructure & Deployment
-- 🏗️ **Infrastructure as Code (IaC)** - Automate infrastructure provisioning
-- 🐳 **Container Orchestration** - Kubernetes & Docker integration
-- 🔄 **CI/CD Pipeline Automation** - Complete pipeline configuration
-- 🌍 **Multi-Environment Management** - dev, staging, production
-- 🎨 **Blue-Green & Canary Deployments** - Advanced deployment strategies
+- `ralps auth login --api-key ...` stores a local fallback API key in `~/.ralps/auth.toml`
+- `ralps agent run` can execute safe local commands derived from prompts such as `run: git status` or `check system health`
+- AI summaries can be requested from Anthropic, OpenAI, and Gemini when credentials are configured
+- `ralps up` / `ralps down` manage a local autopilot scheduler state file and run scheduled tasks in-process
+- The TUI reads real autopilot status, schedules, and recent run history
+- MCP crates implement local JSON-RPC request/response handling for initialization and simple tool calls
 
-### Monitoring & Observability
-- 📊 **Real-Time Metrics & Dashboards** - Live performance tracking
-- 📝 **Log Aggregation & Analysis** - Centralized logging
-- ⚠️ **Alert Management** - Intelligent alerting system
-- 🔍 **Distributed Tracing** - Request flow tracking
+## Workspace Layout
 
-### Automation & Orchestration
-- ⚡ **Workflow Automation** - Event-driven workflows
-- ⏱️ **Task Scheduling** - Cron-based task execution
-- 🔙 **Automated Rollbacks** - Instant recovery
-- 🩹 **Self-Healing** - Automatic issue remediation
+- **cli/** - CLI entrypoint and command routing
+- **tui/** - Terminal UI for autopilot status and schedule visibility
+- **libs/ai/** - Provider HTTP integrations and auth resolution
+- **libs/api/** - Config loading, command execution, and autopilot scheduling
+- **libs/shared/** - Shared models for agent, auth, autopilot, and MCP data
+- **libs/mcp/** - Local JSON-RPC client, server, and proxy components
 
-## 🏗️ Architecture
-
-RALPS is built as a modular Rust workspace with clear separation of concerns:
-
-- **cli/** - Main binary crate with CLI commands
-- **tui/** - Terminal UI layer (ratatui-based)
-- **libs/ai/** - LLM provider abstraction (Anthropic, OpenAI, Gemini)
-- **libs/api/** - API client and context management
-- **libs/shared/** - Shared types and models
-- **libs/mcp/** - Model Context Protocol implementation
-
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
-- macOS 10.15+
-- Rust 1.70+ (install via `rustup`)
+
+- macOS or Linux
+- Rust 1.70+ (`rustup` recommended)
 
 ### Installation
 
 ```bash
 git clone https://github.com/reeazmahmud-sketch/ralps.git
 cd ralps
-
-# Build for development
 cargo build
-
-# Build optimized release
-cargo build --release
 ```
 
 ### First Run
 
 ```bash
-# Login with API key
-ralps auth login --api-key $RALPS_API_KEY
-
-# Start interactive agent
-ralps agent run --interactive
-
-# Or run async mode
-ralps agent run --async --prompt "Check system health"
+ralps auth login --api-key "$ANTHROPIC_API_KEY"
+ralps agent run --prompt "run: git status"
+ralps agent run --prompt "check system health"
 ```
 
-## ⚙️ Configuration
-
-Configuration files are stored in `~/.ralps/`:
+### Autopilot
 
 ```toml
-# config.toml - Main configuration
-[default]
-provider = "anthropic"
-model = "claude-3-opus-20240229"
-
-# autopilot.toml - Schedules and channels
+# ~/.ralps/autopilot.toml
 [[schedules]]
 name = "health-check"
 cron = "*/5 * * * *"
-prompt = "Check system health"
+prompt = "check system health"
+command = "echo healthy"
+provider = "anthropic"
+enabled = true
 ```
 
-## 📝 CLI Commands
-
 ```bash
-# Interactive agent mode
-ralps agent run --interactive
-
-# Async execution
-ralps agent run --async --prompt "Deploy to production"
-
-# Autopilot system
-ralps up                          # Start autopilot
-ralps down                        # Stop autopilot
-ralps autopilot status            # Check status
-ralps autopilot schedule list     # List schedules
+ralps up
+ralps down
+ralps autopilot status
+ralps autopilot schedule list
 ```
 
-## 🔒 Security
+## Authentication
 
-- ✅ No production keys sent to LLM
-- ✅ Credentials stored locally and readonly
-- ✅ Complete audit logging
-- ✅ Tool approval workflow
-- ✅ Sandboxed execution environment
+RALPS resolves provider credentials in this order:
 
-## 🔌 Future RAAL Integration
+1. Provider-specific environment variable
+2. Provider-specific key in `~/.ralps/auth.toml`
+3. Generic `api_key` in `~/.ralps/auth.toml`
 
-RALPS is designed as a standalone, modular system with clear integration points for future connection to RAAL (Reeaz Agentic Autonomy Life):
+Supported environment variables:
 
-- **Event Bus** - Subscribe to agent events
-- **API Gateway** - Call RALPS from external agents
-- **Checkpoint Storage** - Share session state
-- **Message Routing** - Route messages between agents
+- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
 
-Integration will be opt-in and non-breaking. See `docs/INTEGRATION.md` (coming soon).
+## Command Safety
 
-## 🧪 Testing
+RALPS only executes allowlisted programs and rejects shell operators such as `|`, `&`, `;`, `<`, `>`, and backticks.
+
+Current allowlist includes common local inspection and DevOps commands such as:
+
+- `git`
+- `cargo`
+- `kubectl`
+- `docker`
+- `terraform`
+- `ls`, `pwd`, `cat`, `grep`, `rg`, `find`
+- `uptime`, `uname`, `df`, `ps`, `date`, `whoami`
+
+## MCP Support
+
+Current MCP support is local and protocol-focused. It includes:
+
+- JSON-RPC request parsing
+- `initialize`
+- `tools/list`
+- `tools/call`
+- example `echo` and `health-check` tools
+
+## Testing
 
 ```bash
-cargo test --workspace
-cargo test --workspace --lib
-cargo clippy --all-targets
 cargo fmt --check
+cargo clippy --workspace --all-targets
+cargo test --workspace
 ```
 
-## 📚 Documentation
+## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) - System design details
-- [Configuration](docs/CONFIG.md) - Config file reference
-- [Integration](docs/INTEGRATION.md) - Future RAAL integration (coming soon)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Configuration](docs/CONFIG.md)
+- [Integration](docs/INTEGRATION.md)
 
-## 📄 License
-
-Apache License 2.0 - see [LICENSE](LICENSE)
-
-## 🛣️ Roadmap
+## Roadmap
 
 - [x] Workspace setup
-- [x] Core agent execution engine
 - [x] CLI commands
-- [x] LLM integrations
-- [x] TUI implementation
-- [x] Autopilot system
-- [ ] MCP support
-- [ ] Docker support
-- [ ] macOS distribution
-- [ ] RAAL integration interface
-
----
+- [x] Provider-aware auth loading
+- [x] Bounded local command execution
+- [x] Local autopilot scheduler loop
+- [x] Basic MCP JSON-RPC support
+- [x] TUI status views
+- [ ] Richer task planning
+- [ ] Expanded MCP tool catalog
+- [ ] Background daemonization
+- [ ] Remote integration surfaces
 
 **Version:** 0.1.1  
-**Last Updated:** September 15, 2026  
-**License:** Apache 2.0
+**Last Updated:** September 18, 2026
