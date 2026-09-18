@@ -29,7 +29,10 @@ struct AuthArgs {
 
 #[derive(Subcommand, Debug)]
 enum AuthCommands {
-    Login { #[arg(long)] api_key: String },
+    Login {
+        #[arg(long)]
+        api_key: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -90,7 +93,11 @@ async fn run() -> Result<()> {
         Commands::Auth(args) => match args.command {
             AuthCommands::Login { api_key } => {
                 let path = AuthService::default().login(&api_key).await?;
-                println!("{} Saved credentials to {}", "ok:".green().bold(), path.display());
+                println!(
+                    "{} Saved credentials to {}",
+                    "ok:".green().bold(),
+                    path.display()
+                );
             }
         },
         Commands::Agent(args) => match args.command {
@@ -151,7 +158,10 @@ async fn run() -> Result<()> {
                         println!("No schedules configured.");
                     } else {
                         for schedule in schedules.schedules {
-                            println!("- {} ({}) -> {}", schedule.name, schedule.cron, schedule.prompt);
+                            println!(
+                                "- {} ({}) -> {}",
+                                schedule.name, schedule.cron, schedule.prompt
+                            );
                         }
                     }
                 }

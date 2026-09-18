@@ -144,11 +144,11 @@ Apache License 2.0 - see [LICENSE](LICENSE)
 ## 🛣️ Roadmap
 
 - [x] Workspace setup
-- [ ] Core agent execution engine
-- [ ] CLI commands
-- [ ] LLM integrations
-- [ ] TUI implementation
-- [ ] Autopilot system
+- [x] Core agent execution engine
+- [x] CLI commands
+- [x] LLM integrations
+- [x] TUI implementation
+- [x] Autopilot system
 - [ ] MCP support
 - [ ] Docker support
 - [ ] macOS distribution

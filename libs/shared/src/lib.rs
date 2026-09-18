@@ -79,7 +79,10 @@ mod tests {
 
     #[test]
     fn provider_from_str_works() {
-        assert_eq!(Provider::from_str("anthropic").unwrap(), Provider::Anthropic);
+        assert_eq!(
+            Provider::from_str("anthropic").unwrap(),
+            Provider::Anthropic
+        );
         assert!(Provider::from_str("unknown").is_err());
     }
 
