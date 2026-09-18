@@ -61,18 +61,18 @@ cargo build --release
 
 ```bash
 # Login with API key
-ralops auth login --api-key $RALPS_API_KEY
+ralps auth login --api-key $RALPS_API_KEY
 
 # Start interactive agent
-ralops agent run --interactive
+ralps agent run --interactive
 
 # Or run async mode
-ralops agent run --async --prompt "Check system health"
+ralps agent run --async --prompt "Check system health"
 ```
 
 ## ⚙️ Configuration
 
-Configuration files are stored in `~/.ralops/`:
+Configuration files are stored in `~/.ralps/`:
 
 ```toml
 # config.toml - Main configuration
@@ -91,16 +91,16 @@ prompt = "Check system health"
 
 ```bash
 # Interactive agent mode
-ralops agent run --interactive
+ralps agent run --interactive
 
 # Async execution
-ralops agent run --async --prompt "Deploy to production"
+ralps agent run --async --prompt "Deploy to production"
 
 # Autopilot system
-ralops up                          # Start autopilot
-ralops down                        # Stop autopilot
-ralops autopilot status            # Check status
-ralops autopilot schedule list     # List schedules
+ralps up                          # Start autopilot
+ralps down                        # Stop autopilot
+ralps autopilot status            # Check status
+ralps autopilot schedule list     # List schedules
 ```
 
 ## 🔒 Security
