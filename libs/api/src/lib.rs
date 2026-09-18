@@ -1,12 +1,16 @@
 use ai::AiService;
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Datelike, Timelike, Utc};
+use reqwest::StatusCode;
+use serde_json::{json, Value};
 use shared::{
     AgentRequest, AgentResult, AuthConfig, AutopilotConfig, AutopilotRunRecord, AutopilotState,
-    CommandExecution, ExecutionMode, Provider,
+    CommandExecution, ExecutionMode, PlanStepSafety, Provider, RemoteConfig, TaskIntent, TaskPlan,
+    TaskPlanStep,
 };
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 use tokio::fs;
 use tokio::process::Command;
@@ -18,6 +22,10 @@ fn config_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
         .join(".ralps")
+}
+
+fn remote_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("remote.toml")
 }
 
 pub struct AuthService {
@@ -81,19 +89,27 @@ impl AgentEngine {
 
     pub async fn run(&self, request: AgentRequest) -> Result<AgentResult> {
         let auth = self.auth.load().await.unwrap_or_default();
-        let planned_commands = plan_commands(&request.prompt);
+        let remote = load_remote_config(self.auth.config_dir.clone()).await?;
+        let plan = build_task_plan(&request.prompt);
         let mut warnings = Vec::new();
         let mut commands = Vec::new();
 
-        if planned_commands.is_empty() {
+        if plan.steps.is_empty() {
             warnings.push(
                 "No executable action derived from the prompt; returning provider guidance only."
                     .to_string(),
             );
         }
 
-        for command in planned_commands {
-            commands.push(execute_command(&command).await?);
+        warnings.extend(plan.warnings.iter().cloned());
+
+        for command in plan
+            .steps
+            .iter()
+            .filter_map(|step| step.command.as_deref())
+            .map(ToOwned::to_owned)
+        {
+            commands.push(execute_command_with_remote(&command, &remote).await?);
         }
 
         let provider_summary = match self
@@ -115,10 +131,20 @@ impl AgentEngine {
             output,
             created_at: Utc::now(),
             async_job: matches!(request.mode, ExecutionMode::Async),
+            plan,
             provider_summary,
             commands,
             warnings,
         })
+    }
+
+    pub fn plan_task(&self, prompt: &str) -> TaskPlan {
+        build_task_plan(prompt)
+    }
+
+    pub async fn run_safe_command(&self, command: &str) -> Result<CommandExecution> {
+        let remote = load_remote_config(self.auth.config_dir.clone()).await?;
+        execute_command_with_remote(command, &remote).await
     }
 }
 
@@ -149,40 +175,43 @@ impl AutopilotService {
         self.config_dir.join("autopilot_state.toml")
     }
 
+    fn pid_path(&self) -> PathBuf {
+        self.config_dir.join("autopilot.pid")
+    }
+
     pub async fn up(&self) -> Result<AutopilotState> {
-        fs::create_dir_all(&self.config_dir).await?;
-        let mut state = self.status().await?;
-        state.running = true;
-        state.last_started_at = Some(Utc::now());
-        state.schedule_count = self.list_schedules().await?.schedules.len();
-        self.persist_state(&state).await?;
-        Ok(state)
+        self.daemon_start(std::process::id()).await
     }
 
     pub async fn down(&self) -> Result<AutopilotState> {
-        fs::create_dir_all(&self.config_dir).await?;
-        let mut state = self.status().await?;
-        state.running = false;
-        state.schedule_count = self.list_schedules().await?.schedules.len();
-        self.persist_state(&state).await?;
-        Ok(state)
+        self.daemon_stop().await
     }
 
     pub async fn status(&self) -> Result<AutopilotState> {
+        self.recover_stale_daemon().await?;
         let schedules = self.list_schedules().await?;
-        if !path_exists(&self.state_path()).await? {
-            return Ok(AutopilotState {
+        let mut state = if !path_exists(&self.state_path()).await? {
+            AutopilotState {
                 running: false,
+                daemon_pid: None,
+                daemon_started_at: None,
+                daemon_heartbeat_at: None,
                 last_started_at: None,
                 last_tick_at: None,
                 schedule_count: schedules.schedules.len(),
                 recent_runs: Vec::new(),
-            });
-        }
+            }
+        } else {
+            let content = fs::read_to_string(self.state_path()).await?;
+            toml::from_str(&content)?
+        };
 
-        let content = fs::read_to_string(self.state_path()).await?;
-        let mut state: AutopilotState = toml::from_str(&content)?;
         state.schedule_count = schedules.schedules.len();
+        let remote = load_remote_config(self.config_dir.clone()).await?;
+        if remote.enabled {
+            state = fetch_remote_status(&remote).await?;
+            state.schedule_count = schedules.schedules.len();
+        }
         Ok(state)
     }
 
@@ -204,6 +233,9 @@ impl AutopilotService {
             }
 
             self.run_pending_at(Utc::now()).await?;
+            if let Some(pid) = state.daemon_pid {
+                self.daemon_heartbeat(pid).await?;
+            }
             sleep(poll_interval).await;
         }
 
@@ -266,45 +298,197 @@ impl AutopilotService {
         Ok(runs)
     }
 
+    pub async fn daemon_start(&self, pid: u32) -> Result<AutopilotState> {
+        fs::create_dir_all(&self.config_dir).await?;
+        self.recover_stale_daemon().await?;
+        if let Ok(existing_pid) = self.read_pid().await {
+            if is_process_alive(existing_pid) {
+                return Err(anyhow!(
+                    "autopilot daemon already running with pid {existing_pid}"
+                ));
+            }
+        }
+
+        let mut state = self.status().await.unwrap_or_default();
+        let now = Utc::now();
+        state.running = true;
+        state.daemon_pid = Some(pid);
+        state.daemon_started_at = Some(now);
+        state.daemon_heartbeat_at = Some(now);
+        state.last_started_at = Some(now);
+        state.schedule_count = self.list_schedules().await?.schedules.len();
+        self.persist_state(&state).await?;
+        fs::write(self.pid_path(), pid.to_string()).await?;
+        Ok(state)
+    }
+
+    pub async fn daemon_stop(&self) -> Result<AutopilotState> {
+        fs::create_dir_all(&self.config_dir).await?;
+        let mut state = self.status().await.unwrap_or_default();
+        state.running = false;
+        state.daemon_pid = None;
+        state.daemon_started_at = None;
+        state.daemon_heartbeat_at = None;
+        state.schedule_count = self.list_schedules().await?.schedules.len();
+        self.persist_state(&state).await?;
+        if path_exists(&self.pid_path()).await? {
+            fs::remove_file(self.pid_path()).await?;
+        }
+        Ok(state)
+    }
+
+    pub async fn daemon_heartbeat(&self, pid: u32) -> Result<()> {
+        let mut state = self.status().await?;
+        if state.daemon_pid != Some(pid) {
+            return Err(anyhow!("daemon heartbeat rejected for non-owner pid"));
+        }
+        state.daemon_heartbeat_at = Some(Utc::now());
+        self.persist_state(&state).await
+    }
+
+    pub async fn read_pid(&self) -> Result<u32> {
+        let raw = fs::read_to_string(self.pid_path()).await?;
+        raw.trim()
+            .parse::<u32>()
+            .context("autopilot pid file is invalid")
+    }
+
+    async fn recover_stale_daemon(&self) -> Result<()> {
+        if !path_exists(&self.pid_path()).await? {
+            return Ok(());
+        }
+        let pid = self.read_pid().await?;
+        if is_process_alive(pid) {
+            return Ok(());
+        }
+
+        let mut state = if path_exists(&self.state_path()).await? {
+            let content = fs::read_to_string(self.state_path()).await?;
+            toml::from_str::<AutopilotState>(&content)?
+        } else {
+            AutopilotState::default()
+        };
+        state.running = false;
+        state.daemon_pid = None;
+        state.daemon_started_at = None;
+        state.daemon_heartbeat_at = None;
+        self.persist_state(&state).await?;
+        fs::remove_file(self.pid_path()).await?;
+        Ok(())
+    }
+
     async fn persist_state(&self, state: &AutopilotState) -> Result<()> {
         fs::write(self.state_path(), toml::to_string_pretty(state)?).await?;
         Ok(())
     }
 }
 
-fn plan_commands(prompt: &str) -> Vec<String> {
+fn build_task_plan(prompt: &str) -> TaskPlan {
     let trimmed = prompt.trim();
     if trimmed.is_empty() {
-        return Vec::new();
+        return TaskPlan {
+            intent: TaskIntent::GuidanceOnly,
+            steps: Vec::new(),
+            warnings: vec!["Prompt was empty.".to_string()],
+        };
     }
 
     if let Some(command) = extract_prefixed_command(trimmed) {
-        return vec![command];
+        return TaskPlan {
+            intent: TaskIntent::DirectCommand,
+            steps: vec![TaskPlanStep {
+                description: "Execute explicit command".to_string(),
+                command: Some(command),
+                safety: PlanStepSafety::Safe,
+            }],
+            warnings: Vec::new(),
+        };
     }
 
     let normalized = trimmed.to_lowercase();
-    if normalized.contains("check system health") {
-        return vec![
-            "uptime".to_string(),
-            "df -h".to_string(),
-            "uname -a".to_string(),
-        ];
+    if normalized.contains("check system health") || normalized.contains("system health") {
+        return TaskPlan {
+            intent: TaskIntent::SystemHealth,
+            steps: vec![
+                plan_step("Read host uptime", "uptime"),
+                plan_step("Check disk pressure", "df -h"),
+                plan_step("Capture host kernel details", "uname -a"),
+            ],
+            warnings: Vec::new(),
+        };
+    }
+
+    if normalized.contains("diagnostic") || normalized.contains("diagnostics") {
+        return TaskPlan {
+            intent: TaskIntent::Diagnostics,
+            steps: vec![
+                plan_step("Read host uptime", "uptime"),
+                plan_step(
+                    "List top processes by CPU and memory",
+                    "ps -eo pid,comm,%cpu,%mem",
+                ),
+                plan_step("Capture filesystem usage", "df -h"),
+            ],
+            warnings: Vec::new(),
+        };
     }
 
     if normalized == "git status" || normalized.contains("show git status") {
-        return vec!["git status --short --branch".to_string()];
+        return TaskPlan {
+            intent: TaskIntent::RepoStatus,
+            steps: vec![
+                plan_step(
+                    "Inspect git branch and worktree status",
+                    "git status --short --branch",
+                ),
+                plan_step("Show current HEAD revision", "git rev-parse --short HEAD"),
+            ],
+            warnings: Vec::new(),
+        };
     }
 
     if normalized.contains("list files") || normalized.contains("show files") {
-        return vec!["ls".to_string()];
+        return TaskPlan {
+            intent: TaskIntent::FileInspection,
+            steps: vec![
+                plan_step("Print current working directory", "pwd"),
+                plan_step("List files in current directory", "ls"),
+            ],
+            warnings: Vec::new(),
+        };
     }
 
     let first_word = trimmed.split_whitespace().next().unwrap_or_default();
     if is_allowed_program(first_word) {
-        return vec![trimmed.to_string()];
+        return TaskPlan {
+            intent: TaskIntent::DirectCommand,
+            steps: vec![TaskPlanStep {
+                description: "Execute inferred command".to_string(),
+                command: Some(trimmed.to_string()),
+                safety: PlanStepSafety::ReviewRequired,
+            }],
+            warnings: vec![
+                "Command inferred from prompt text; review before execution.".to_string(),
+            ],
+        };
     }
 
-    Vec::new()
+    TaskPlan {
+        intent: TaskIntent::GuidanceOnly,
+        steps: Vec::new(),
+        warnings: vec![
+            "No safe command template matched the prompt.".to_string(),
+            "Use `run: <command>` for explicit execution.".to_string(),
+        ],
+    }
+}
+
+fn plan_step(description: &str, command: &str) -> TaskPlanStep {
+    TaskPlanStep {
+        description: description.to_string(),
+        command: Some(command.to_string()),
+        safety: PlanStepSafety::Safe,
+    }
 }
 
 fn extract_prefixed_command(prompt: &str) -> Option<String> {
@@ -319,7 +503,17 @@ fn extract_prefixed_command(prompt: &str) -> Option<String> {
     None
 }
 
-async fn execute_command(command: &str) -> Result<CommandExecution> {
+async fn execute_command_with_remote(
+    command: &str,
+    remote: &RemoteConfig,
+) -> Result<CommandExecution> {
+    if remote.enabled {
+        return execute_remote_command(command, remote).await;
+    }
+    execute_command_local(command).await
+}
+
+async fn execute_command_local(command: &str) -> Result<CommandExecution> {
     validate_command(command)?;
 
     let args = split_command(command)?;
@@ -342,6 +536,84 @@ async fn execute_command(command: &str) -> Result<CommandExecution> {
         stdout: truncate(&String::from_utf8_lossy(&output.stdout), 4000),
         stderr: truncate(&String::from_utf8_lossy(&output.stderr), 4000),
         success: output.status.success(),
+        executed_at: Utc::now(),
+    })
+}
+
+async fn execute_remote_command(command: &str, remote: &RemoteConfig) -> Result<CommandExecution> {
+    let endpoint = remote
+        .execute_endpoint
+        .as_deref()
+        .ok_or_else(|| anyhow!("remote mode enabled but execute_endpoint is not configured"))?;
+    validate_command(command)?;
+
+    let client = reqwest::Client::new();
+    let attempts = remote.retries.saturating_add(1) as usize;
+    let mut last_error = None;
+
+    for _attempt in 0..attempts {
+        let mut request = client
+            .post(endpoint)
+            .header("content-type", "application/json")
+            .json(&json!({ "command": command }));
+        if let Some(token) = remote.auth_token.as_deref() {
+            request = request.bearer_auth(token);
+        }
+
+        match timeout(Duration::from_secs(remote.timeout_secs), request.send()).await {
+            Ok(Ok(response)) => {
+                return parse_remote_execution_response(response, command).await;
+            }
+            Ok(Err(error)) => {
+                last_error = Some(anyhow!("remote execute request failed: {error}"));
+            }
+            Err(_) => {
+                last_error = Some(anyhow!(
+                    "remote execute timed out after {}s",
+                    remote.timeout_secs
+                ));
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow!("remote execute failed")))
+}
+
+async fn parse_remote_execution_response(
+    response: reqwest::Response,
+    command: &str,
+) -> Result<CommandExecution> {
+    let status = response.status();
+    let body: Value = response
+        .json()
+        .await
+        .context("remote execution returned invalid JSON")?;
+
+    if status != StatusCode::OK {
+        let message = body
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("remote execution error");
+        return Err(anyhow!("{message}"));
+    }
+
+    Ok(CommandExecution {
+        command: command.to_string(),
+        exit_code: body.get("exit_code").and_then(Value::as_i64).unwrap_or(-1) as i32,
+        stdout: body
+            .get("stdout")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        stderr: body
+            .get("stderr")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        success: body
+            .get("success")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         executed_at: Utc::now(),
     })
 }
@@ -427,6 +699,75 @@ fn render_agent_output(
     } else {
         sections.join("\n\n")
     }
+}
+
+async fn load_remote_config(config_dir: PathBuf) -> Result<RemoteConfig> {
+    let path = remote_path(&config_dir);
+    if !path_exists(&path).await? {
+        return Ok(RemoteConfig::default());
+    }
+    let content = fs::read_to_string(path).await?;
+    let parsed: RemoteConfig = toml::from_str(&content)?;
+    Ok(parsed)
+}
+
+async fn fetch_remote_status(remote: &RemoteConfig) -> Result<AutopilotState> {
+    let endpoint = remote
+        .status_endpoint
+        .as_deref()
+        .ok_or_else(|| anyhow!("remote mode enabled but status_endpoint is not configured"))?;
+    let client = reqwest::Client::new();
+    let attempts = remote.retries.saturating_add(1) as usize;
+    let mut last_error = None;
+
+    for _attempt in 0..attempts {
+        let mut request = client.get(endpoint);
+        if let Some(token) = remote.auth_token.as_deref() {
+            request = request.bearer_auth(token);
+        }
+
+        match timeout(Duration::from_secs(remote.timeout_secs), request.send()).await {
+            Ok(Ok(response)) => {
+                let status = response.status();
+                let body: Value = response
+                    .json()
+                    .await
+                    .context("remote status returned invalid JSON")?;
+                if status != StatusCode::OK {
+                    let message = body
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("remote status request failed");
+                    return Err(anyhow!("{message}"));
+                }
+                let parsed: AutopilotState = serde_json::from_value(body)
+                    .context("remote status payload does not match autopilot state schema")?;
+                return Ok(parsed);
+            }
+            Ok(Err(error)) => {
+                last_error = Some(anyhow!("remote status request failed: {error}"));
+            }
+            Err(_) => {
+                last_error = Some(anyhow!(
+                    "remote status timed out after {}s",
+                    remote.timeout_secs
+                ));
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow!("remote status request failed")))
+}
+
+fn is_process_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn format_command_section(commands: &[CommandExecution]) -> String {
@@ -582,5 +923,50 @@ command = "echo healthy"
             .with_timezone(&Utc);
         assert!(cron_matches("*/5 * * * *", now).unwrap());
         assert!(!cron_matches("*/7 * * * *", now).unwrap());
+    }
+
+    #[test]
+    fn planner_builds_multi_step_health_plan() {
+        let plan = build_task_plan("check system health");
+        assert_eq!(plan.intent, TaskIntent::SystemHealth);
+        assert!(plan.steps.len() >= 3);
+        assert!(plan.warnings.is_empty());
+    }
+
+    #[test]
+    fn planner_guidance_only_for_unmatched_prompt() {
+        let plan = build_task_plan("write me a poem about stars");
+        assert_eq!(plan.intent, TaskIntent::GuidanceOnly);
+        assert!(plan.steps.is_empty());
+        assert!(!plan.warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_pid_is_recovered() {
+        let config_dir = temp_config_dir("stale-pid");
+        fs::create_dir_all(&config_dir).await.unwrap();
+        fs::write(config_dir.join("autopilot.pid"), "999999")
+            .await
+            .unwrap();
+        fs::write(
+            config_dir.join("autopilot_state.toml"),
+            toml::to_string_pretty(&AutopilotState {
+                running: true,
+                daemon_pid: Some(999999),
+                daemon_started_at: Some(Utc::now()),
+                daemon_heartbeat_at: Some(Utc::now()),
+                last_started_at: Some(Utc::now()),
+                last_tick_at: Some(Utc::now()),
+                schedule_count: 0,
+                recent_runs: Vec::new(),
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let state = AutopilotService::new(config_dir).status().await.unwrap();
+        assert!(!state.running);
+        assert!(state.daemon_pid.is_none());
     }
 }

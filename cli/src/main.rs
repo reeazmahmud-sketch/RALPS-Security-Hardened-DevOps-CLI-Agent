@@ -4,7 +4,9 @@ use clap::{Args, Parser, Subcommand};
 use colored::Colorize;
 use shared::{AgentRequest, ExecutionMode, Provider};
 use std::io::{self, Read};
+use std::process::Stdio;
 use std::time::Duration;
+use tokio::process::Command;
 
 #[derive(Parser, Debug)]
 #[command(name = "ralps", about = "ralps - security-hardened devops CLI agent")]
@@ -66,6 +68,7 @@ struct AutopilotArgs {
 enum AutopilotCommands {
     Status,
     Schedule(ScheduleArgs),
+    Daemon(DaemonArgs),
 }
 
 #[derive(Args, Debug)]
@@ -77,6 +80,21 @@ struct ScheduleArgs {
 #[derive(Subcommand, Debug)]
 enum ScheduleCommands {
     List,
+}
+
+#[derive(Args, Debug)]
+struct DaemonArgs {
+    #[command(subcommand)]
+    command: DaemonCommands,
+}
+
+#[derive(Subcommand, Debug)]
+enum DaemonCommands {
+    Start,
+    Stop,
+    Status,
+    #[command(hide = true)]
+    Run,
 }
 
 #[tokio::main]
@@ -121,6 +139,25 @@ async fn run() -> Result<()> {
                     .await?;
 
                 println!("{} {}", "job:".cyan().bold(), result.id);
+                println!("{} {:?}", "intent:".cyan().bold(), result.plan.intent);
+                if !result.plan.steps.is_empty() {
+                    println!("{}", "plan:".cyan().bold());
+                    for (index, step) in result.plan.steps.iter().enumerate() {
+                        println!(
+                            "  {}. {} [{}]{}",
+                            index + 1,
+                            step.description,
+                            match step.safety {
+                                shared::PlanStepSafety::Safe => "safe",
+                                shared::PlanStepSafety::ReviewRequired => "review",
+                            },
+                            step.command
+                                .as_deref()
+                                .map(|command| format!(" -> {command}"))
+                                .unwrap_or_default()
+                        );
+                    }
+                }
                 println!(
                     "{} {}",
                     "mode:".cyan().bold(),
@@ -134,48 +171,26 @@ async fn run() -> Result<()> {
             }
         },
         Commands::Up => {
-            let service = AutopilotService::default();
-            let state = service.up().await?;
-            println!(
-                "{} running={} schedules={}",
-                "autopilot:".green().bold(),
-                state.running,
-                state.schedule_count
-            );
-            println!(
-                "{} running scheduler loop; use `ralps down` or Ctrl-C to stop",
-                "info:".cyan().bold()
-            );
-
-            tokio::select! {
-                result = service.run_loop(Duration::from_secs(30)) => result?,
-                _ = tokio::signal::ctrl_c() => {
-                    let stopped = service.down().await?;
-                    println!(
-                        "{} running={} schedules={}",
-                        "autopilot:".yellow().bold(),
-                        stopped.running,
-                        stopped.schedule_count
-                    );
-                }
-            }
+            start_daemon().await?;
         }
         Commands::Down => {
-            let state = AutopilotService::default().down().await?;
-            println!(
-                "{} running={} schedules={}",
-                "autopilot:".yellow().bold(),
-                state.running,
-                state.schedule_count
-            );
+            stop_daemon().await?;
         }
         Commands::Autopilot(args) => match args.command {
             AutopilotCommands::Status => {
                 let state = AutopilotService::default().status().await?;
                 println!(
-                    "{} running={} schedules={} last_tick={}",
+                    "{} running={} daemon_pid={} heartbeat={} schedules={} last_tick={}",
                     "autopilot:".blue().bold(),
                     state.running,
+                    state
+                        .daemon_pid
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    state
+                        .daemon_heartbeat_at
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_else(|| "never".to_string()),
                     state.schedule_count,
                     state
                         .last_tick_at
@@ -216,10 +231,85 @@ async fn run() -> Result<()> {
                     }
                 }
             },
+            AutopilotCommands::Daemon(args) => match args.command {
+                DaemonCommands::Start => start_daemon().await?,
+                DaemonCommands::Stop => stop_daemon().await?,
+                DaemonCommands::Status => {
+                    let state = AutopilotService::default().status().await?;
+                    println!(
+                        "{} running={} pid={} heartbeat={}",
+                        "daemon:".blue().bold(),
+                        state.running,
+                        state
+                            .daemon_pid
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        state
+                            .daemon_heartbeat_at
+                            .map(|value| value.to_rfc3339())
+                            .unwrap_or_else(|| "never".to_string())
+                    );
+                }
+                DaemonCommands::Run => run_daemon().await?,
+            },
         },
     }
 
     Ok(())
+}
+
+async fn start_daemon() -> Result<()> {
+    let exe = std::env::current_exe()?;
+    let mut child = Command::new(exe)
+        .args(["autopilot", "daemon", "run"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let pid = child
+        .id()
+        .ok_or_else(|| anyhow!("daemon pid unavailable"))?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let state = AutopilotService::default().status().await?;
+    if !state.running {
+        child.start_kill()?;
+        return Err(anyhow!("autopilot daemon failed to start"));
+    }
+    println!(
+        "{} running={} pid={}",
+        "autopilot:".green().bold(),
+        state.running,
+        pid
+    );
+    Ok(())
+}
+
+async fn stop_daemon() -> Result<()> {
+    let service = AutopilotService::default();
+    let state = service.status().await?;
+    if let Some(pid) = state.daemon_pid {
+        let _ = Command::new("kill").arg(pid.to_string()).status().await;
+    }
+    let stopped = service.daemon_stop().await?;
+    println!(
+        "{} running={} schedules={}",
+        "autopilot:".yellow().bold(),
+        stopped.running,
+        stopped.schedule_count
+    );
+    Ok(())
+}
+
+async fn run_daemon() -> Result<()> {
+    let service = AutopilotService::default();
+    service.daemon_start(std::process::id()).await?;
+
+    let run_result = tokio::select! {
+        result = service.run_loop(Duration::from_secs(30)) => result,
+        _ = tokio::signal::ctrl_c() => Ok(()),
+    };
+    let _ = service.daemon_stop().await;
+    run_result
 }
 
 fn resolve_mode(interactive: bool, async_mode: bool) -> Result<ExecutionMode> {

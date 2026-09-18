@@ -9,11 +9,12 @@ RALPS is a security-hardened DevOps CLI prototype for local operational workflow
 ## Current Capabilities
 
 - `ralps auth login --api-key ...` stores a local fallback API key in `~/.ralps/auth.toml`
-- `ralps agent run` can execute safe local commands derived from prompts such as `run: git status` or `check system health`
+- `ralps agent run` builds a structured task plan (intent, steps, safety) before executing safe bounded commands
 - AI summaries can be requested from Anthropic, OpenAI, and Gemini when credentials are configured
-- `ralps up` / `ralps down` manage a local autopilot scheduler state file and run scheduled tasks in-process
+- `ralps up` / `ralps down` now manage a background autopilot daemon with PID and heartbeat tracking
 - The TUI reads real autopilot status, schedules, and recent run history
-- MCP crates implement local JSON-RPC request/response handling for initialization and simple tool calls
+- MCP crates expose a centralized tool registry with task planning, autopilot operations, and safe command execution tools
+- Optional remote integrations can forward MCP calls and command/status operations to configured endpoints
 
 ## Workspace Layout
 
@@ -97,13 +98,13 @@ Current allowlist includes common local inspection and DevOps commands such as:
 
 ## MCP Support
 
-Current MCP support is local and protocol-focused. It includes:
+Current MCP support includes:
 
 - JSON-RPC request parsing
 - `initialize`
 - `tools/list`
 - `tools/call`
-- example `echo` and `health-check` tools
+- centralized tool registry for `echo`, `health-check`, `task-plan`, `autopilot-status`, `autopilot-schedule-list`, `autopilot-recent-runs`, and `safe-command`
 
 ## Testing
 
@@ -128,10 +129,10 @@ cargo test --workspace
 - [x] Local autopilot scheduler loop
 - [x] Basic MCP JSON-RPC support
 - [x] TUI status views
-- [ ] Richer task planning
-- [ ] Expanded MCP tool catalog
-- [ ] Background daemonization
-- [ ] Remote integration surfaces
+- [x] Richer task planning
+- [x] Expanded MCP tool catalog
+- [x] Background daemonization
+- [x] Remote integration surfaces
 
 **Version:** 0.1.1  
 **Last Updated:** September 18, 2026

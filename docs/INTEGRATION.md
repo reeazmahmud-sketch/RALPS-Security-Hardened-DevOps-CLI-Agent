@@ -10,7 +10,17 @@ The MCP server crate handles JSON-RPC 2.0 requests for:
 - `tools/list`
 - `tools/call`
 
-The proxy crate can construct a request, forward it to the server, and validate the response.
+The MCP server exposes a centralized tool registry:
+
+- `echo`
+- `health-check`
+- `task-plan`
+- `autopilot-status`
+- `autopilot-schedule-list`
+- `autopilot-recent-runs`
+- `safe-command`
+
+The proxy crate can construct a request, forward it locally or remotely (when enabled), and validate the response.
 
 ## Autopilot state
 
@@ -22,4 +32,4 @@ Autopilot writes runtime state to `~/.ralps/autopilot_state.toml`, including:
 
 ## Future extension points
 
-The current implementation is intentionally local-first. Future work can add remote transports, richer MCP tools, and more advanced task planning without changing the existing CLI surface.
+The implementation is local-first by default. Optional `~/.ralps/remote.toml` settings can enable remote MCP forwarding and remote execution/status surfaces with auth, timeout, retry, and fail-closed behavior.

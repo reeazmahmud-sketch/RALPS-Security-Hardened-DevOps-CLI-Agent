@@ -30,3 +30,17 @@ enabled = true
 ```
 
 Supported cron syntax is the common five-field format with `*`, comma-separated values, and `*/step` intervals.
+
+## `remote.toml` (optional)
+
+```toml
+enabled = false
+mcp_endpoint = "https://example.internal/mcp"
+execute_endpoint = "https://example.internal/exec"
+status_endpoint = "https://example.internal/autopilot/status"
+auth_token = "optional-bearer-token"
+timeout_secs = 10
+retries = 2
+```
+
+When `enabled = true`, RALPS uses fail-closed behavior for configured remote MCP and execution/status integrations.
