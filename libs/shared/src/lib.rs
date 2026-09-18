@@ -84,7 +84,10 @@ pub struct AuthConfig {
 impl AuthConfig {
     pub fn key_for(&self, provider: Provider) -> Option<&str> {
         match provider {
-            Provider::Anthropic => self.anthropic_api_key.as_deref().or(self.api_key.as_deref()),
+            Provider::Anthropic => self
+                .anthropic_api_key
+                .as_deref()
+                .or(self.api_key.as_deref()),
             Provider::OpenAi => self.openai_api_key.as_deref().or(self.api_key.as_deref()),
             Provider::Gemini => self.gemini_api_key.as_deref().or(self.api_key.as_deref()),
         }

@@ -179,7 +179,13 @@ fn resolve_api_key(provider: Provider, auth: &AuthConfig) -> Result<String> {
 
     auth.key_for(provider)
         .map(ToOwned::to_owned)
-        .ok_or_else(|| anyhow!("Missing API key for {:?}. Set {} or ~/.ralps/auth.toml", provider, provider.env_var()))
+        .ok_or_else(|| {
+            anyhow!(
+                "Missing API key for {:?}. Set {} or ~/.ralps/auth.toml",
+                provider,
+                provider.env_var()
+            )
+        })
 }
 
 async fn parse_text_response(
@@ -216,6 +222,9 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(resolve_api_key(Provider::OpenAi, &auth).unwrap(), "shared-key");
+        assert_eq!(
+            resolve_api_key(Provider::OpenAi, &auth).unwrap(),
+            "shared-key"
+        );
     }
 }

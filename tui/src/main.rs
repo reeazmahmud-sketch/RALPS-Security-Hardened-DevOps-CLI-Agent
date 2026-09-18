@@ -61,7 +61,11 @@ async fn run_ui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                     Span::raw("Autopilot: "),
                     Span::styled(
                         if state.running { "running" } else { "stopped" },
-                        Style::default().fg(if state.running { Color::Green } else { Color::Yellow }),
+                        Style::default().fg(if state.running {
+                            Color::Green
+                        } else {
+                            Color::Yellow
+                        }),
                     ),
                 ]),
                 Line::from(format!("Schedules: {}", state.schedule_count)),
@@ -78,13 +82,18 @@ async fn run_ui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
             frame.render_widget(status, chunks[1]);
 
             let schedule_items: Vec<ListItem> = if schedules.schedules.is_empty() {
-                vec![ListItem::new("No schedules configured in ~/.ralps/autopilot.toml")]
+                vec![ListItem::new(
+                    "No schedules configured in ~/.ralps/autopilot.toml",
+                )]
             } else {
                 schedules
                     .schedules
                     .iter()
                     .map(|schedule| {
-                        let mode = schedule.command.as_deref().unwrap_or(schedule.prompt.as_str());
+                        let mode = schedule
+                            .command
+                            .as_deref()
+                            .unwrap_or(schedule.prompt.as_str());
                         ListItem::new(format!(
                             "{} [{}] {}",
                             schedule.name,

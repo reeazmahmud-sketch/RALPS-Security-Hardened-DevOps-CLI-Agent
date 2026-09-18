@@ -121,7 +121,15 @@ async fn run() -> Result<()> {
                     .await?;
 
                 println!("{} {}", "job:".cyan().bold(), result.id);
-                println!("{} {}", "mode:".cyan().bold(), if result.async_job { "async" } else { "interactive" });
+                println!(
+                    "{} {}",
+                    "mode:".cyan().bold(),
+                    if result.async_job {
+                        "async"
+                    } else {
+                        "interactive"
+                    }
+                );
                 println!("{}\n{}", "result:".green().bold(), result.output);
             }
         },
@@ -134,7 +142,10 @@ async fn run() -> Result<()> {
                 state.running,
                 state.schedule_count
             );
-            println!("{} running scheduler loop; use `ralps down` or Ctrl-C to stop", "info:".cyan().bold());
+            println!(
+                "{} running scheduler loop; use `ralps down` or Ctrl-C to stop",
+                "info:".cyan().bold()
+            );
 
             tokio::select! {
                 result = service.run_loop(Duration::from_secs(30)) => result?,

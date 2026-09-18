@@ -96,7 +96,11 @@ impl AgentEngine {
             commands.push(execute_command(&command).await?);
         }
 
-        let provider_summary = match self.ai.generate_with_auth(request.provider, &request.prompt, &auth).await {
+        let provider_summary = match self
+            .ai
+            .generate_with_auth(request.provider, &request.prompt, &auth)
+            .await
+        {
             Ok(summary) => Some(summary),
             Err(error) => {
                 warnings.push(format!("Provider summary unavailable: {error}"));
@@ -214,8 +218,13 @@ impl AutopilotService {
         }
 
         let mut runs = Vec::new();
-        for schedule in schedules.schedules.into_iter().filter(|schedule| schedule.enabled) {
-            if !cron_matches(&schedule.cron, now)? || already_ran_this_minute(&state, &schedule.name, now)
+        for schedule in schedules
+            .schedules
+            .into_iter()
+            .filter(|schedule| schedule.enabled)
+        {
+            if !cron_matches(&schedule.cron, now)?
+                || already_ran_this_minute(&state, &schedule.name, now)
             {
                 continue;
             }
@@ -338,8 +347,13 @@ async fn execute_command(command: &str) -> Result<CommandExecution> {
 }
 
 fn validate_command(command: &str) -> Result<()> {
-    if command.chars().any(|ch| matches!(ch, '|' | '&' | ';' | '>' | '<' | '`')) {
-        return Err(anyhow!("unsafe shell operator rejected in command: {command}"));
+    if command
+        .chars()
+        .any(|ch| matches!(ch, '|' | '&' | ';' | '>' | '<' | '`'))
+    {
+        return Err(anyhow!(
+            "unsafe shell operator rejected in command: {command}"
+        ));
     }
 
     let args = split_command(command)?;
@@ -424,10 +438,16 @@ fn format_command_section(commands: &[CommandExecution]) -> String {
             if command.success { "ok" } else { "failed" }
         ));
         if !command.stdout.trim().is_empty() {
-            lines.push(format!("  stdout: {}", command.stdout.trim().replace('\n', " | ")));
+            lines.push(format!(
+                "  stdout: {}",
+                command.stdout.trim().replace('\n', " | ")
+            ));
         }
         if !command.stderr.trim().is_empty() {
-            lines.push(format!("  stderr: {}", command.stderr.trim().replace('\n', " | ")));
+            lines.push(format!(
+                "  stderr: {}",
+                command.stderr.trim().replace('\n', " | ")
+            ));
         }
     }
     lines.join("\n")
@@ -474,7 +494,9 @@ fn matches_field(field: &str, value: u32) -> Result<bool> {
     }
 
     for candidate in field.split(',') {
-        let parsed: u32 = candidate.parse().with_context(|| format!("invalid cron value: {candidate}"))?;
+        let parsed: u32 = candidate
+            .parse()
+            .with_context(|| format!("invalid cron value: {candidate}"))?;
         if parsed == value {
             return Ok(true);
         }
@@ -483,7 +505,11 @@ fn matches_field(field: &str, value: u32) -> Result<bool> {
     Ok(false)
 }
 
-fn already_ran_this_minute(state: &AutopilotState, schedule_name: &str, now: DateTime<Utc>) -> bool {
+fn already_ran_this_minute(
+    state: &AutopilotState,
+    schedule_name: &str,
+    now: DateTime<Utc>,
+) -> bool {
     state.recent_runs.iter().any(|run| {
         run.schedule_name == schedule_name
             && run.started_at.year() == now.year()
