@@ -4,6 +4,7 @@ use clap::{Args, Parser, Subcommand};
 use colored::Colorize;
 use shared::{AgentRequest, ExecutionMode, Provider};
 use std::io::{self, Read};
+use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[command(name = "ralps", about = "ralps - security-hardened devops CLI agent")]
@@ -120,17 +121,44 @@ async fn run() -> Result<()> {
                     .await?;
 
                 println!("{} {}", "job:".cyan().bold(), result.id);
-                println!("{} {}", "result:".green().bold(), result.output);
+                println!(
+                    "{} {}",
+                    "mode:".cyan().bold(),
+                    if result.async_job {
+                        "async"
+                    } else {
+                        "interactive"
+                    }
+                );
+                println!("{}\n{}", "result:".green().bold(), result.output);
             }
         },
         Commands::Up => {
-            let state = AutopilotService::default().up().await?;
+            let service = AutopilotService::default();
+            let state = service.up().await?;
             println!(
                 "{} running={} schedules={}",
                 "autopilot:".green().bold(),
                 state.running,
                 state.schedule_count
             );
+            println!(
+                "{} running scheduler loop; use `ralps down` or Ctrl-C to stop",
+                "info:".cyan().bold()
+            );
+
+            tokio::select! {
+                result = service.run_loop(Duration::from_secs(30)) => result?,
+                _ = tokio::signal::ctrl_c() => {
+                    let stopped = service.down().await?;
+                    println!(
+                        "{} running={} schedules={}",
+                        "autopilot:".yellow().bold(),
+                        stopped.running,
+                        stopped.schedule_count
+                    );
+                }
+            }
         }
         Commands::Down => {
             let state = AutopilotService::default().down().await?;
@@ -145,11 +173,26 @@ async fn run() -> Result<()> {
             AutopilotCommands::Status => {
                 let state = AutopilotService::default().status().await?;
                 println!(
-                    "{} running={} schedules={}",
+                    "{} running={} schedules={} last_tick={}",
                     "autopilot:".blue().bold(),
                     state.running,
-                    state.schedule_count
+                    state.schedule_count,
+                    state
+                        .last_tick_at
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_else(|| "never".to_string())
                 );
+                if !state.recent_runs.is_empty() {
+                    println!("recent runs:");
+                    for run in state.recent_runs.iter().rev().take(5) {
+                        println!(
+                            "- {} [{}] {}",
+                            run.schedule_name,
+                            if run.success { "ok" } else { "failed" },
+                            run.summary
+                        );
+                    }
+                }
             }
             AutopilotCommands::Schedule(schedule) => match schedule.command {
                 ScheduleCommands::List => {
@@ -159,8 +202,15 @@ async fn run() -> Result<()> {
                     } else {
                         for schedule in schedules.schedules {
                             println!(
-                                "- {} ({}) -> {}",
-                                schedule.name, schedule.cron, schedule.prompt
+                                "- {} ({}) enabled={} provider={} target={}",
+                                schedule.name,
+                                schedule.cron,
+                                schedule.enabled,
+                                schedule
+                                    .provider
+                                    .map(|provider| format!("{:?}", provider))
+                                    .unwrap_or_else(|| "Anthropic".to_string()),
+                                schedule.command.unwrap_or(schedule.prompt)
                             );
                         }
                     }
