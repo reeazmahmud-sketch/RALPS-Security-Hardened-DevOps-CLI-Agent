@@ -9,4 +9,6 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
+api = { path = "../../api" }
 shared = { path = "../../shared" }

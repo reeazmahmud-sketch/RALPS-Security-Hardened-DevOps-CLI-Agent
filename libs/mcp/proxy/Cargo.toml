@@ -9,5 +9,8 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 serde_json.workspace = true
+reqwest = { workspace = true, features = ["json", "blocking"] }
+toml.workspace = true
 client = { path = "../client" }
 server = { path = "../server" }
+shared = { path = "../../shared" }

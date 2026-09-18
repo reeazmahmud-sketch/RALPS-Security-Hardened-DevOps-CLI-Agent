@@ -92,6 +92,8 @@ dependencies = [
  "ai",
  "anyhow",
  "chrono",
+ "reqwest",
+ "serde_json",
  "shared",
  "tokio",
  "toml",
@@ -1036,8 +1038,11 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "client",
+ "reqwest",
  "serde_json",
  "server",
+ "shared",
+ "toml",
 ]
 
 [[package]]
@@ -1289,8 +1294,10 @@ name = "server"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "api",
  "serde_json",
  "shared",
+ "tokio",
 ]
 
 [[package]]
